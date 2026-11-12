@@ -55,6 +55,8 @@ generate a header and include it **before** `chao.h`:
 #include "chao/chao.h"
 ```
 
+The nob build does this for the examples automatically: it packs `assets/` into `build/resources.h` and adds `build/` to the include path.
+
 ## Layout
 
 ```

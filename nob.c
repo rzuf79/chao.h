@@ -96,6 +96,33 @@ static bool build_resource_packer(void) {
     return cmd_run(&cmd);
 }
 
+// Collects every regular, non-hidden file under assets/ so we know when to re-pack.
+static bool collect_asset(Walk_Entry entry) {
+    const char* name = path_name(entry.path);
+    if (name[0] == '.') {
+        if (entry.type == FILE_DIRECTORY && entry.level > 0) *entry.action = WALK_SKIP;
+        return true;
+    }
+    if (entry.type == FILE_REGULAR) da_append((File_Paths*)entry.data, temp_strdup(entry.path));
+    return true;
+}
+
+// Embeds assets/ into build/resources.h, which the examples include before chao.h.
+static bool build_resources(void) {
+    const char* output = BUILD_DIR "resources.h";
+    File_Paths deps = {0};
+    da_append(&deps, BUILD_DIR "resource_packer" EXE);
+    if (!walk_dir("assets", collect_asset, .data = &deps)) return false;
+    int rebuild = needs_rebuild(output, deps.items, deps.count);
+    da_free(deps);
+    if (rebuild < 0) return false;
+    if (!rebuild) return true;
+
+    Cmd cmd = {0};
+    cmd_append(&cmd, BUILD_DIR "resource_packer" EXE, "assets", output);
+    return cmd_run(&cmd);
+}
+
 static bool build_example(const char* name) {
     const char* source = temp_sprintf(EXAMPLES_DIR "%s/main.c", name);
     const char* output = temp_sprintf("%s%s" EXE, out_dir(), name);
@@ -115,6 +142,7 @@ static bool build_example(const char* name) {
         }
     }
     da_append(&deps, "nob.c");
+    da_append(&deps, BUILD_DIR "resources.h");
     int rebuild = needs_rebuild(output, deps.items, deps.count);
     da_free(deps);
     da_free(headers);
@@ -130,6 +158,11 @@ static bool build_example(const char* name) {
     cmd_append(&cmd, "-std=gnu11", "-Wall", "-Wno-unused-function", "-Wno-unused-variable");
 #endif
     append_build_type_flags(&cmd);
+#ifdef _MSC_VER
+    cmd_append(&cmd, "/I" BUILD_DIR);
+#else
+    cmd_append(&cmd, "-I" BUILD_DIR);
+#endif
     nob_cc_output(&cmd, output);
     nob_cc_inputs(&cmd, source);
     append_platform(&cmd);
@@ -164,6 +197,7 @@ int main(int argc, char** argv) {
     if (!mkdir_if_not_exists(BUILD_DIR)) return 1;
     if (!mkdir_if_not_exists(out_dir())) return 1;
     if (!build_resource_packer()) return 1;
+    if (!build_resources()) return 1;
     for (size_t i = 0; i < ARRAY_LEN(examples); ++i) {
         if (!build_example(examples[i])) return 1;
     }

@@ -116,19 +116,17 @@ void chao_run(const char* window_name, int width, int height, void(*init_func_po
 
     do {
         uint32_t current_time = platform_get_time();
-        double dt = (current_time - last_time) / 1000.f;
-        dt = min(dt, MAX_DELTA_TIME);
-        
-        // calculate fps
-        {
-           frames_counter ++;
-           fps_timer += dt;
-           if (fps_timer >= 1.0f) {
-           	   chao_fps = frames_counter;
-           	   frames_counter = 0;
-           	   fps_timer = 0;
-		   }
-		}
+        double frame_time = (current_time - last_time) / 1000.f;
+        double dt = min(frame_time, MAX_DELTA_TIME);
+
+        // fps counts real elapsed time, not the clamped dt the game sees
+        frames_counter++;
+        fps_timer += frame_time;
+        if (fps_timer >= 1.0f) {
+            chao_fps = (int)(frames_counter / fps_timer + 0.5f);
+            frames_counter = 0;
+            fps_timer = 0;
+        }
         
         last_time = current_time;
 
