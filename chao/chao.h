@@ -14,6 +14,7 @@
 #include "tweener.h"
 #include "noise.h"
 #include "renderer.h"
+#include "mesh.h"
 #include "assets.h"
 #include "particles.h"
 #include "nine_slice.h"

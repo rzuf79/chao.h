@@ -109,57 +109,14 @@ static uint32_t terrain_color(float x, float z) {
     return rgb(c.x, c.y, c.z);
 }
 
+static float terrain_height_cb(float x, float z, void* user) {
+    (void)user;
+    return terrain_height(x, z);
+}
+
 static Model3D* terrain_generate(void) {
-    const int side = GRID + 1;
-    const int verts = side * side;
-    const int tris = GRID * GRID * 2;
     const float half = TERRAIN_SIZE * 0.5f;
-
-    Model3D* m = (Model3D*)malloc(sizeof(Model3D));
-    m->vertices    = (Vector3*)malloc(sizeof(Vector3) * verts);
-    m->normals     = (Vector3*)malloc(sizeof(Vector3) * verts);
-    m->uvs         = (Vector2*)malloc(sizeof(Vector2) * verts);
-    m->tris        = (Vector3Int*)malloc(sizeof(Vector3Int) * tris);
-    m->tri_uvs     = (Vector3Int*)malloc(sizeof(Vector3Int) * tris);
-    m->tri_normals = (Vector3Int*)malloc(sizeof(Vector3Int) * tris);
-    m->tris_count  = tris;
-
-    // Vertices on a grid centred on the origin; UVs span the whole texture.
-    for (int j = 0; j < side; ++j) {
-        for (int i = 0; i < side; ++i) {
-            float x = i * CELL_SIZE - half;
-            float z = j * CELL_SIZE - half;
-            int idx = j * side + i;
-            m->vertices[idx] = (Vector3){ x, terrain_height(x, z), z };
-            m->uvs[idx] = (Vector2){ (float)i / GRID, (float)j / GRID };
-        }
-    }
-
-    // Normals from central differences of the height field.
-    for (int j = 0; j < side; ++j) {
-        for (int i = 0; i < side; ++i) {
-            float x = i * CELL_SIZE - half;
-            float z = j * CELL_SIZE - half;
-            float dx = terrain_height(x + CELL_SIZE, z) - terrain_height(x - CELL_SIZE, z);
-            float dz = terrain_height(x, z + CELL_SIZE) - terrain_height(x, z - CELL_SIZE);
-            m->normals[j * side + i] = vector3_get_normalized((Vector3){ -dx, 2.0f * CELL_SIZE, -dz });
-        }
-    }
-
-    // Two counter-clockwise (seen from above) triangles per cell.
-    int t = 0;
-    for (int j = 0; j < GRID; ++j) {
-        for (int i = 0; i < GRID; ++i) {
-            int a = j * side + i;     // (i,   j)
-            int b = a + 1;            // (i+1, j)
-            int c = a + side;         // (i,   j+1)
-            int d = c + 1;            // (i+1, j+1)
-            Vector3Int t0 = { a, c, b };
-            Vector3Int t1 = { b, c, d };
-            m->tris[t] = m->tri_uvs[t] = m->tri_normals[t] = t0; ++t;
-            m->tris[t] = m->tri_uvs[t] = m->tri_normals[t] = t1; ++t;
-        }
-    }
+    Model3D* m = model3d_create_heightmap(GRID, CELL_SIZE, terrain_height_cb, NULL);
 
     // Texture sampled straight from the noise, so it has more detail than the mesh.
     m->texture = create_bitmap(TEXTURE_SIZE, TEXTURE_SIZE);
@@ -178,7 +135,6 @@ static void terrain_free(Model3D* m) {
     if (!m) return;
     free_bitmap(m->texture);
     model3d_free(m);
-    free(m);
 }
 
 static void regenerate(void) {

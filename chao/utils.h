@@ -81,7 +81,7 @@ static inline uint32_t lerp_color(uint32_t color1, uint32_t color2, float v) {
     uint8_t b = (uint8_t)round(b1 + (b2 - b1) * v);
     uint8_t a = (uint8_t)round(a1 + (a2 - a1) * v);
 
-    return (r << 24) | (g << 16) | (b << 8) | a;
+    return ((uint32_t)r << 24) | ((uint32_t)g << 16) | ((uint32_t)b << 8) | (uint32_t)a;
 }
 
 static inline uint32_t mix_colors3(uint32_t c1, uint32_t c2, uint32_t c3, uint32_t u1, uint32_t u2, uint32_t det) {
@@ -109,7 +109,7 @@ static inline uint32_t mix_colors3(uint32_t c1, uint32_t c2, uint32_t c3, uint32
     uint8_t b = (uint8_t)((b1 * u1 + b2 * u2 + b3 * u3 + det / 2) / det);
     uint8_t a = (uint8_t)((a1 * u1 + a2 * u2 + a3 * u3 + det / 2) / det);
 
-    return (r << 24) | (g << 16) | (b << 8) | a;
+    return ((uint32_t)r << 24) | ((uint32_t)g << 16) | ((uint32_t)b << 8) | (uint32_t)a;
 }
 
 static inline uint32_t string_to_hex_color(const char *str) {

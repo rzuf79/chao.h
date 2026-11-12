@@ -29,8 +29,9 @@
 
 #define COLOR_TRANSPARENT 0xFFFFFF00
 
-#define RGBA(r, g, b, a) ((r << 24) | (g << 16) | (b << 8) | a)
-#define FRGBA(r, g, b, a) (((r*256) << 24) | ((g*255) << 16) | ((b*255) << 8) | (a*255))
+// Shifts are done on uint32_t: shifting a promoted (signed) int left by 24 is undefined behaviour.
+#define RGBA(r, g, b, a) (((uint32_t)(r) << 24) | ((uint32_t)(g) << 16) | ((uint32_t)(b) << 8) | (uint32_t)(a))
+#define FRGBA(r, g, b, a) RGBA((uint32_t)((r) * 255.0f), (uint32_t)((g) * 255.0f), (uint32_t)((b) * 255.0f), (uint32_t)((a) * 255.0f))
 #define SET_ALPHA(color, alpha) ((color & 0xFFFFFF00) | ((int)((alpha)) & 0xFF))
 #define SET_ALPHAF(color, alpha) (SET_ALPHA(color, alpha * 255))
 #define screen_size chao_canvas->size
@@ -852,6 +853,8 @@ typedef struct {
 
 typedef struct {
     Bitmap* texture;
+    uint32_t color;   // model colour, multiplied with the texture
+    bool tinted;      // color != white, so the multiply is needed
     bool lit;
     Vector3 light;  // normalized, pointing toward the light
     float ambient;
@@ -935,7 +938,7 @@ static void raster_triangle_3d(Bitmap* dst, const ScreenVertex* v0, const Screen
             zbuf[index] = depth;
         }
 
-        uint32_t sample = 0xFF00FFFF;
+        uint32_t sample = sh->color;
         if (tex) {
             float u = (v[0]->u_w * l0 + v[1]->u_w * l1 + v[2]->u_w * l2) * depth;
             float w = (v[0]->v_w * l0 + v[1]->v_w * l1 + v[2]->v_w * l2) * depth;
@@ -944,6 +947,7 @@ static void raster_triangle_3d(Bitmap* dst, const ScreenVertex* v0, const Screen
             tx = tx < 0 ? 0 : tx >= tex->size.x ? tex->size.x - 1 : tx;
             ty = ty < 0 ? 0 : ty >= tex->size.y ? tex->size.y - 1 : ty;
             sample = tex->pixels[ty * tex->size.x + tx];
+            if (sh->tinted) sample = modulate_pixel(sample, sh->color);
         }
 
         if (sh->lit || sh->fog) {
@@ -989,6 +993,8 @@ void draw_model3d_m(Bitmap* dst, Camera3D* cam, Model3D* model, Matrix4 model_ma
 
     Shade3D sh = {0};
     sh.texture = model->texture;
+    sh.color = model->color;
+    sh.tinted = model->color != 0xFFFFFFFF;
     sh.lit = chao_3d_directional_light.enabled;
     sh.light = vector3_get_normalized(chao_3d_directional_light.direction);
     sh.ambient = chao_3d_directional_light.ambient;
@@ -1018,7 +1024,7 @@ void draw_model3d_m(Bitmap* dst, Camera3D* cam, Model3D* model, Matrix4 model_ma
 
         // Trivial reject when all three vertices are outside the same frustum plane.
         {
-            int out_l = 0, out_r = 0, out_b = 0, out_t = 0, out_n = 0;
+            int out_l = 0, out_r = 0, out_b = 0, out_t = 0, out_n = 0, out_f = 0;
             for (int k = 0; k < 3; ++k) {
                 Vector4 p = cv[k].pos;
                 out_l += p.x < -p.w;
@@ -1026,8 +1032,10 @@ void draw_model3d_m(Bitmap* dst, Camera3D* cam, Model3D* model, Matrix4 model_ma
                 out_b += p.y < -p.w;
                 out_t += p.y >  p.w;
                 out_n += p.z < -p.w;
+                out_f += p.z >  p.w;
             }
-            if (out_l == 3 || out_r == 3 || out_b == 3 || out_t == 3 || out_n == 3) continue;
+            // Beyond the far plane is only rejected, not clipped: straddling triangles are drawn whole.
+            if (out_l == 3 || out_r == 3 || out_b == 3 || out_t == 3 || out_n == 3 || out_f == 3) continue;
         }
 
         if (sh.lit) {
@@ -1082,6 +1090,56 @@ void draw_model3d(Bitmap* dst, Camera3D* camera, Model3D* model, Vector3 positio
     matrix4_mul(model_matrix, rot);
 
 	draw_model3d_m(dst, camera, model, model_matrix);
+}
+
+// Projects a world point to dst's pixel coordinates. out->z is the view depth (distance along
+// the view direction). Returns false when the point is behind the near plane.
+bool camera3d_project(const Bitmap* dst, Camera3D* cam, Vector3 world, Vector3* out) {
+    Matrix4 vp;
+    MATRIX4_COPY(vp, cam->projection);
+    matrix4_mul(vp, cam->view);
+    Vector4 p = vector4_get_transformed((Vector4){ world.x, world.y, world.z, 1.0f }, vp);
+    if (p.z < -p.w || p.w <= 0.0f) return false;
+    out->x = (p.x / p.w * 0.5f + 0.5f) * (float)dst->size.x;
+    out->y = (0.5f - p.y / p.w * 0.5f) * (float)dst->size.y;
+    out->z = p.w;
+    return true;
+}
+
+// Draws a square "point sprite" of the given world-space size, depth tested against the
+// z-buffer (without writing to it) and blended with chao_blend_mode. Fog applies.
+// Good for particles.
+void draw_point3d(Bitmap* dst, Camera3D* cam, Vector3 world, float size, uint32_t color) {
+    Vector3 s;
+    if (!camera3d_project(dst, cam, world, &s)) return;
+    float depth = s.z;
+    // projection[1][1] is 1/tan(fov/2): world size -> fraction of half the screen height
+    float pixels = size * cam->projection[1][1] / depth * (float)dst->size.y * 0.5f;
+    if (pixels < 1.0f) pixels = 1.0f;
+    int x0 = (int)floorf(s.x - pixels * 0.5f + 0.5f);
+    int y0 = (int)floorf(s.y - pixels * 0.5f + 0.5f);
+    int x1 = x0 + (int)(pixels + 0.5f);
+    int y1 = y0 + (int)(pixels + 0.5f);
+    if (x1 == x0) x1++;
+    if (y1 == y0) y1++;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > dst->size.x) x1 = dst->size.x;
+    if (y1 > dst->size.y) y1 = dst->size.y;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    if (chao_3d_fog.enabled && chao_3d_fog.end > chao_3d_fog.start) {
+        float f = clamp01((depth - chao_3d_fog.start) / (chao_3d_fog.end - chao_3d_fog.start));
+        if (f >= 1.0f) return;
+        color = lerp_color(color, (chao_3d_fog.color & 0xFFFFFF00) | (color & 0xFF), f);
+    }
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            int i = y * dst->size.x + x;
+            if (dst->z_buffer && depth >= dst->z_buffer[i]) continue;
+            dst->pixels[i] = blend_pixel(color, dst->pixels[i], chao_blend_mode);
+        }
+    }
 }
 
 #endif // CHAO_RENDERER_H

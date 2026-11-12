@@ -76,7 +76,8 @@ typedef struct {
     int tris_count;
     Vector3Int* tri_uvs;
     Vector3Int* tri_normals;
-    Bitmap* texture;
+    Bitmap* texture;  // optional
+    uint32_t color;   // RGBA, multiplied with the texture (or used on its own without one)
 } Model3D;
 
 typedef struct {
@@ -718,66 +719,6 @@ Vector4 quaternion_left(const Quaternion* q) {
 }
 static inline int quaternion_equals(const Quaternion* a, const Quaternion* b) {
     return a->x==b->x && a->y==b->y && a->z==b->z && a->w==b->w;
-}
-
-/* MODEL3D */
-void model3d_free(Model3D* model) {
-	if (model != NULL) {
-		free(model->vertices);
-		free(model->normals);
-		free(model->uvs);
-		free(model->tris);
-		free(model->tri_uvs);
-		free(model->tri_normals);
-
-		model->vertices = NULL;
-		model->normals = NULL;
-		model->uvs = NULL;
-		model->tris = NULL;
-		model->tri_uvs = NULL;
-		model->tri_normals = NULL;
-	}
-}
-Model3D* model3d_create_quad(Vector2 size) {
-    Model3D* m = (Model3D*)malloc(sizeof(Model3D));
-
-    float hw = size.x * 0.5f;
-    float hh = size.y * 0.5f;
-
-    m->vertices = malloc(sizeof(Vector3) * 4);
-    m->normals = malloc(sizeof(Vector3) * 4);
-    m->uvs = malloc(sizeof(Vector2) * 4);
-    m->tris = malloc(sizeof(Vector3Int) * 2);
-    m->tri_uvs = malloc(sizeof(Vector3Int) * 2);
-    m->tri_normals = malloc(sizeof(Vector3Int) * 2);
-    m->tris_count = 2;
-
-    m->vertices[0] = (Vector3){ -hw, -hh, 0 };
-    m->vertices[1] = (Vector3){  hw, -hh, 0 };
-    m->vertices[2] = (Vector3){  hw,  hh, 0 };
-    m->vertices[3] = (Vector3){ -hw,  hh, 0 };
-
-    m->uvs[0] = (Vector2){0,1};
-    m->uvs[1] = (Vector2){1,1};
-    m->uvs[2] = (Vector2){1,0};
-    m->uvs[3] = (Vector2){0,0};
-
-    for (int i = 0; i < 4; i++) {
-        m->normals[i] = (Vector3){0,0,-1};
-	}
-
-    m->tris[0] = (Vector3Int){0, 1, 2};
-    m->tris[1] = (Vector3Int){0, 2, 3};
-
-    m->tri_uvs[0] = (Vector3Int){0,1,2};
-    m->tri_uvs[1] = (Vector3Int){0,2,3};
-
-    m->tri_normals[0] = (Vector3Int){0,1,2};
-    m->tri_normals[1] = (Vector3Int){0,2,3};
-
-    m->texture = NULL;
-
-    return m;
 }
 
 /* CAMERA3D */

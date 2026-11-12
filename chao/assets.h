@@ -158,6 +158,7 @@ Model3D* assets_load_model3d(const char* id, const char* path) {
 void assets_free_model3ds() {
 	for (int i = 0; i < MAX_MODEL3D_ASSETS; ++i) {
 		model3d_free(model3d_assets[i].model);
+		model3d_assets[i].model = NULL;
 		model3d_assets[i].id = -1;
 	}
 }
@@ -178,6 +179,7 @@ Model3D* assets_get_model(const char* id) {
 Model3D* assets_parse_obj(const char* obj_data) {
     Model3D* model = (Model3D*)malloc(sizeof(Model3D));
     model->texture = NULL;
+    model->color = 0xFFFFFFFF;
 
     int verts_count = 0;
     int uvs_count = 0;

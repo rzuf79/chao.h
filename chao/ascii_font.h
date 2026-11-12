@@ -329,7 +329,7 @@ Vector2Int ascii_font_get_size(AsciiFont* font, const char* text, int max_chars)
     int n = strlen(text);
     
     if (max_chars >= 0) {
-        n = max(n, max_chars);
+        n = min(n, max_chars);
     }
     
     Vector2Int size = { 0, font->glyph_size.y };

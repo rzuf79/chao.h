@@ -19,6 +19,8 @@ cc -o nob nob.c
 - `hello_triangle`: a spinning, vertex-colored triangle. The smallest possible chao program.
 - `terrain`: a heightmap mesh and texture generated from `noise.h`, drawn with the 3D pipeline (directional light and fog), with a free-fly camera.
   Click to capture the mouse and Esc to release it. WASD moves, Space/E goes up, Q/Ctrl goes down, Shift moves faster, the arrow keys look around and R generates a new terrain.
+- `beacon_run`: a small but complete game. Glide a paper plane over a generated island and light 5 beacons before the fog swallows it. Thermals, marked by clouds, let you climb.
+  A/D turn, W/S dive and climb, Esc pauses. Everything in it (island, models, effects) is generated in code.
 
 macOS and Linux use SDL2 (`/Library/Frameworks/SDL2.framework` or `sdl2-config`).
 Windows uses the WinAPI backend and needs no extra dependencies.
@@ -61,6 +63,7 @@ The nob build does this for the examples automatically: it packs `assets/` into 
 
 ```
 chao/               the library (chao.h includes everything)
+chao/mesh.h         building Model3D meshes in code: boxes, cylinders, cones, heightmaps, triangle lists
 chao/platforms/     SDL2, WinAPI, libcaca and dummy backends
 examples/           example programs, each built by nob.c
 tools/              resource_packer: embeds assets/ into a C header
