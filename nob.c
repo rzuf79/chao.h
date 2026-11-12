@@ -7,7 +7,7 @@
 // Usage: ./nob [release] [run <example>]
 //   ./nob                      build tools and all examples (debug)
 //   ./nob release              optimized build
-//   ./nob run hello_triangle   build, then launch an example
+//   ./nob run terrain          build, then launch an example
 #define NOB_IMPLEMENTATION
 #define NOB_STRIP_PREFIX
 #include "nob.h"
@@ -18,6 +18,7 @@
 
 static const char* examples[] = {
     "hello_triangle",
+    "terrain",
 };
 
 #ifdef _WIN32

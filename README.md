@@ -14,6 +14,12 @@ cc -o nob nob.c
 ./nob run hello_triangle     # build and launch an example
 ```
 
+## Examples
+
+- `hello_triangle`: a spinning, vertex-colored triangle. The smallest possible chao program.
+- `terrain`: a heightmap mesh and texture generated from `noise.h`, drawn with the 3D pipeline (directional light and fog), with a free-fly camera.
+  Click to capture the mouse and Esc to release it. WASD moves, Space/E goes up, Q/Ctrl goes down, Shift moves faster, the arrow keys look around and R generates a new terrain.
+
 macOS and Linux use SDL2 (`/Library/Frameworks/SDL2.framework` or `sdl2-config`).
 Windows uses the WinAPI backend and needs no extra dependencies.
 

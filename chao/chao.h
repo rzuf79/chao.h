@@ -89,6 +89,7 @@ void chao_run(const char* window_name, int width, int height, void(*init_func_po
     chao_canvas = create_bitmap(width, height);
     create_bitmap_z_buffer(chao_canvas);
     
+    chao_input_init();
     platform_init(window_name, width, height);
     platform_window_resized = &chao_on_window_resized;
 

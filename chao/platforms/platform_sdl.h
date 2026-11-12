@@ -31,6 +31,8 @@ void platform_resize(int width, int height) {
 }
 
 void platform_init(const char* window_name, int width, int height) {
+    // report relative mouse motion in real window pixels, not scaled to the logical canvas size
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SCALING, "0");
     SDL_Init(SDL_INIT_EVERYTHING);
     sdl_window = SDL_CreateWindow(window_name,
         SDL_WINDOWPOS_CENTERED,
@@ -62,6 +64,8 @@ bool platform_update() {
     
     SDL_Event event;
     
+    input.mouse.dx = 0;
+    input.mouse.dy = 0;
     input.mouse.wheel_delta = 0;
     input.mouse.just_pressed = false;
     input.mouse.just_released = false;
@@ -117,6 +121,8 @@ bool platform_update() {
             case SDL_MOUSEMOTION: {
                 input.mouse.x = event.motion.x;
                 input.mouse.y = event.motion.y;
+                input.mouse.dx += event.motion.xrel;
+                input.mouse.dy += event.motion.yrel;
                 break;
             }
             case SDL_MOUSEBUTTONDOWN: {
@@ -156,6 +162,15 @@ bool platform_update() {
     SDL_RenderPresent(sdl_renderer);
     
     return !should_quit;
+}
+
+// Hides the cursor and keeps it inside the window; use input.mouse.dx/dy for movement.
+void platform_set_mouse_locked(bool locked) {
+    SDL_SetRelativeMouseMode(locked ? SDL_TRUE : SDL_FALSE);
+}
+
+bool platform_is_mouse_locked() {
+    return SDL_GetRelativeMouseMode() == SDL_TRUE;
 }
 
 void platform_set_pixels(uint32_t* pixels, int width, int height) {

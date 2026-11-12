@@ -80,6 +80,8 @@ static void platform_set_window_size(int width, int height) {
 }
 
 static bool platform_update(void) {
+    input.mouse.dx               = 0;
+    input.mouse.dy               = 0;
     input.mouse.wheel_delta      = 0;
     input.mouse.just_pressed     = false;
     input.mouse.just_released    = false;
@@ -116,6 +118,17 @@ static bool platform_update(void) {
     }
 
     return !should_quit;
+}
+
+// TODO: real pointer lock (raw input + ClipCursor). For now deltas stop at the window edge.
+static bool win_mouse_locked = false;
+static void platform_set_mouse_locked(bool locked) {
+    if (locked != win_mouse_locked) ShowCursor(locked ? FALSE : TRUE);
+    win_mouse_locked = locked;
+}
+
+static bool platform_is_mouse_locked(void) {
+    return win_mouse_locked;
 }
 
 static void platform_set_pixels(uint32_t* pixels, int width, int height) {
@@ -316,8 +329,14 @@ static LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
         case WM_MOUSEMOVE: {
-            input.mouse.x = GET_X_LPARAM(lParam);
-            input.mouse.y = GET_Y_LPARAM(lParam);
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            if (input.mouse.x >= 0) {
+                input.mouse.dx += x - input.mouse.x;
+                input.mouse.dy += y - input.mouse.y;
+            }
+            input.mouse.x = x;
+            input.mouse.y = y;
             return 0;
         }
         case WM_LBUTTONDOWN: {

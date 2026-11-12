@@ -533,10 +533,11 @@ void matrix4_look_at(Matrix4 m, Vector3 eye, Vector3 target, Vector3 up)
     vector3_normalize(&r);
     Vector3 u = vector3_cross(r, f);
 
+    // Rows are the camera basis (right, up, -forward), so world -> view space.
     MATRIX4_SET(m,
-        r.x,    u.x,    -f.x,   -vector3_dot(r, eye),
-        r.y,    u.y,    -f.y,   -vector3_dot(u, eye),
-        r.z,    u.z,    -f.z,   vector3_dot(f, eye),
+        r.x,    r.y,    r.z,    -vector3_dot(r, eye),
+        u.x,    u.y,    u.z,    -vector3_dot(u, eye),
+        -f.x,   -f.y,   -f.z,   vector3_dot(f, eye),
         0,      0,      0,      1
     );
 }

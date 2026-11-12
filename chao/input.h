@@ -15,6 +15,8 @@ typedef enum {
 typedef struct {
     int x;
     int y;
+    int dx; // motion since last frame in window pixels, keeps working while the mouse is locked
+    int dy;
     int wheel_delta;
     bool pressed;
     bool just_pressed;
@@ -48,6 +50,8 @@ void chao_input_reset_keys(bool* keys_ptr) {
 void chao_input_init() {
     input.mouse.x = -1;
     input.mouse.y = -1;
+    input.mouse.dx = 0;
+    input.mouse.dy = 0;
     input.mouse.wheel_delta = false;
     input.mouse.pressed = false;
     input.mouse.just_pressed = false;

@@ -74,6 +74,9 @@ bool platform_update() {
 }
 
 // Render the pixel buffer to the canvas
+void platform_set_mouse_locked(bool locked) {}
+bool platform_is_mouse_locked() { return false; }
+
 void platform_set_pixels(uint32_t* pixels, int width, int height) {
     if (!canvas || width > current_width || height > current_height) {
         return; // Safety check
