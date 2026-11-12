@@ -1,0 +1,13 @@
+.DS_Store
+*.dSYM
+build/
+nob
+nob.old
+nob.exe.old
+nob.exe
+nob.obj
+nob.pdb
+vc*.pdb
+resources.h
+*.swp
+*.swo
