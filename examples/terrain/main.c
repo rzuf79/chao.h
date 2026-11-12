@@ -30,7 +30,7 @@
 #define FAST_MULTIPLIER 4.0f
 #define MOUSE_SENSITIVITY 0.0025f
 #define KEY_LOOK_SPEED 1.8f
-#define MIN_HEIGHT_ABOVE_GROUND 1.5f
+#define MIN_HEIGHT_ABOVE_GROUND 0.3f
 
 typedef struct {
     Vector3 position;
@@ -240,8 +240,7 @@ static void camera_update(float dt) {
         fly.position = vector3_add(fly.position, move);
     }
 
-    // Stay above the ground: the renderer drops triangles that cross the near plane,
-    // so getting too close would punch holes in the terrain.
+    // Don't fly through the ground.
     float ground = terrain_height(fly.position.x, fly.position.z);
     fly.position.y = fmaxf(fly.position.y, ground + MIN_HEIGHT_ABOVE_GROUND);
 

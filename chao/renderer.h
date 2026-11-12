@@ -78,7 +78,7 @@ void create_bitmap_z_buffer(Bitmap* bitmap) {
 	}
 	bitmap->z_buffer = (float*)malloc(sizeof(float) * bitmap->size.x * bitmap->size.y);
 	for (int i = 0; i < bitmap->size.x * bitmap->size.y; ++i) {
-		bitmap->z_buffer[i] = -INFINITY;
+		bitmap->z_buffer[i] = INFINITY;  // empty: everything is closer
 	}
 }
 
@@ -235,7 +235,7 @@ void put_pixel(Bitmap* bitmap, int x, int y, uint32_t color) {
 }
 
 uint32_t get_pixel(Bitmap* bitmap, int x, int y) {
-    if (bitmap == NULL || x < 0 || x > bitmap->size.x || y < 0 || y > bitmap->size.y) {
+    if (bitmap == NULL || x < 0 || x >= bitmap->size.x || y < 0 || y >= bitmap->size.y) {
         return 0xFF00FF00;
     }
     return bitmap->pixels[y * bitmap->size.x + x];
@@ -421,6 +421,96 @@ void fill_arc(Bitmap* dst, int cx, int cy, int r, int start_angle, int end_angle
 //// TRIANGLES
 ///////////////////////////////
 
+// Triangles are rasterized with edge functions on a sub-pixel grid:
+//  - vertices snap to 1/16 of a pixel instead of whole pixels, so shapes don't wobble
+//  - a pixel is covered when its centre is inside the triangle
+//  - the top-left fill rule decides pixels exactly on an edge, so triangles that share
+//    an edge never leave gaps between them and never draw the same pixel twice
+//  - edge functions are 64-bit, so large coordinates can't overflow
+#define CHAO_SUBPIXEL_BITS 4
+#define CHAO_SUBPIXEL_ONE (1 << CHAO_SUBPIXEL_BITS)
+#define CHAO_SUBPIXEL_HALF (CHAO_SUBPIXEL_ONE / 2)
+
+typedef struct {
+    int64_t x[3], y[3];  // fixed-point vertices
+    int64_t area;        // twice the signed area, in fixed-point units squared
+} RasterTri;
+
+typedef struct {
+    int min_x, min_y, max_x, max_y;  // pixel bounds, clipped to the target
+    int64_t a[3], b[3], c[3];        // edge i (opposite vertex i): e(x, y) = a*x + b*y + c
+} RasterSetup;
+
+static inline int64_t raster_fixed(float v) {
+    return (int64_t)llroundf(v * (float)CHAO_SUBPIXEL_ONE);
+}
+
+// Snaps a triangle to the sub-pixel grid and computes its signed area.
+// area > 0: clockwise on screen (y down), area < 0: counter-clockwise, 0: degenerate.
+static inline RasterTri raster_tri(float x0, float y0, float x1, float y1, float x2, float y2) {
+    RasterTri t;
+    t.x[0] = raster_fixed(x0); t.y[0] = raster_fixed(y0);
+    t.x[1] = raster_fixed(x1); t.y[1] = raster_fixed(y1);
+    t.x[2] = raster_fixed(x2); t.y[2] = raster_fixed(y2);
+    t.area = (t.x[1] - t.x[0]) * (t.y[2] - t.y[0]) - (t.y[1] - t.y[0]) * (t.x[2] - t.x[0]);
+    return t;
+}
+
+// Prepares edge functions for a triangle with area > 0. Returns false if it covers no pixels of dst.
+static bool raster_setup(const Bitmap* dst, const RasterTri* t, RasterSetup* s) {
+    int64_t min_x = t->x[0], max_x = t->x[0], min_y = t->y[0], max_y = t->y[0];
+    for (int i = 1; i < 3; ++i) {
+        if (t->x[i] < min_x) min_x = t->x[i];
+        if (t->x[i] > max_x) max_x = t->x[i];
+        if (t->y[i] < min_y) min_y = t->y[i];
+        if (t->y[i] > max_y) max_y = t->y[i];
+    }
+    // floor() to whole pixels; slightly conservative, the edge test does the exact work
+    min_x >>= CHAO_SUBPIXEL_BITS; max_x >>= CHAO_SUBPIXEL_BITS;
+    min_y >>= CHAO_SUBPIXEL_BITS; max_y >>= CHAO_SUBPIXEL_BITS;
+    if (max_x < 0 || max_y < 0 || min_x >= dst->size.x || min_y >= dst->size.y) return false;
+    s->min_x = min_x < 0 ? 0 : (int)min_x;
+    s->min_y = min_y < 0 ? 0 : (int)min_y;
+    s->max_x = max_x >= dst->size.x ? dst->size.x - 1 : (int)max_x;
+    s->max_y = max_y >= dst->size.y ? dst->size.y - 1 : (int)max_y;
+
+    for (int i = 0; i < 3; ++i) {
+        int j = (i + 1) % 3, k = (i + 2) % 3;  // edge j -> k is opposite vertex i
+        int64_t ax = t->x[j], ay = t->y[j], bx = t->x[k], by = t->y[k];
+        s->a[i] = ay - by;
+        s->b[i] = bx - ax;
+        s->c[i] = (by - ay) * ax - (bx - ax) * ay;
+        // Top-left rule (clockwise on a y-down screen): a top edge runs left to right,
+        // a left edge runs upwards. Pixels exactly on any other edge belong to the neighbour.
+        bool top = ay == by && bx > ax;
+        bool left = by < ay;
+        if (!top && !left) s->c[i] -= 1;
+    }
+    return true;
+}
+
+// Loops over every pixel whose centre is covered. In the body: px, py are the pixel and
+// e0, e1, e2 the (integer) barycentric weights of vertices 0, 1, 2; they sum to roughly t.area.
+#define CHAO_RASTER_LOOP(s, ...)                                                         \
+    do {                                                                                  \
+        const int64_t step = CHAO_SUBPIXEL_ONE;                                           \
+        int64_t sx = (int64_t)(s).min_x * step + CHAO_SUBPIXEL_HALF;                      \
+        int64_t sy = (int64_t)(s).min_y * step + CHAO_SUBPIXEL_HALF;                      \
+        int64_t r0 = (s).a[0] * sx + (s).b[0] * sy + (s).c[0];                            \
+        int64_t r1 = (s).a[1] * sx + (s).b[1] * sy + (s).c[1];                            \
+        int64_t r2 = (s).a[2] * sx + (s).b[2] * sy + (s).c[2];                            \
+        for (int py = (s).min_y; py <= (s).max_y; ++py) {                                 \
+            int64_t e0 = r0, e1 = r1, e2 = r2;                                            \
+            const int64_t dx0 = (s).a[0] * step, dx1 = (s).a[1] * step, dx2 = (s).a[2] * step; \
+            /* increments live in the for header so the body may use `continue` */            \
+            for (int px = (s).min_x; px <= (s).max_x; ++px, e0 += dx0, e1 += dx1, e2 += dx2) { \
+                if ((e0 | e1 | e2) < 0) continue;                                         \
+                __VA_ARGS__                                                               \
+            }                                                                             \
+            r0 += (s).b[0] * step; r1 += (s).b[1] * step; r2 += (s).b[2] * step;          \
+        }                                                                                 \
+    } while (0)
+
 float signed_triangle_area(int x1, int y1, int x2, int y2, int x3, int y3) {
 	return ((y2-y1)*(x2+x1) + (y3-y2)*(x3+x2) + (y1-y3)*(x1+x3)) * 0.5f;
 }
@@ -434,221 +524,55 @@ RectInt get_tri_bounds(int x1, int y1, int x2, int y2, int x3, int y3) {
 	};
 }
 
-RectInt get_tri_bounds_clamped(Bitmap* dst, int x1, int y1, int x2, int y2, int x3, int y3) {
-	return (RectInt) {
-		max(0, min(min(x1, x2), x3)),
-		max(0, min(min(y1, y2), y3)),
-		min(dst->size.x-1, max(max(x1, x2), x3)),
-		min(dst->size.y-1, max(max(y1, y2), y3))
-	};
-}
-
-bool tri_barycentric(int x1, int y1, int x2, int y2, int x3, int y3, int xp, int yp, int *u1, int *u2, int *det) {
-	*det = ((x1 - x3)*(y2 - y3) - (x2 - x3)*(y1 - y3));
-	*u1  = ((y2 - y3)*(xp - x3) + (x3 - x2)*(yp - y3));
-	*u2  = ((y3 - y1)*(xp - x3) + (x1 - x3)*(yp - y3));
-	int u3 = *det - *u1 - *u2;
-	return (
-			(sign(int, *u1) == sign(int, *det) || *u1 == 0) &&
-			(sign(int, *u2) == sign(int, *det) || *u2 == 0) &&
-			(sign(int, u3) == sign(int, *det) || u3 == 0)
-		   );
-}
-
+// Integer pixel coordinates refer to pixel centres, so fill_triangle(.., 0,0, 10,0, 0,10, ..)
+// covers the same pixels as the corresponding float triangle through (0.5,0.5), (10.5,0.5), (0.5,10.5).
 void fill_triangle(Bitmap* dst, int x1, int y1, int x2, int y2, int x3, int y3, uint32_t color) {
-	RectInt bb = get_tri_bounds_clamped(dst, x1, y1, x2, y2, x3, y3);
-	for (int x = bb.x; x <= bb.w; ++x) {
-		for (int y = bb.y; y <= bb.h; ++y) {
-			int u1, u2, det;
-			if (tri_barycentric(x1, y1, x2, y2, x3, y3, x, y, &u1, &u2, &det)) {
-				put_pixel(dst, x, y, color);
-			}
-		}
-	}
+    RasterTri t = raster_tri(x1 + 0.5f, y1 + 0.5f, x2 + 0.5f, y2 + 0.5f, x3 + 0.5f, y3 + 0.5f);
+    if (t.area == 0) return;
+    if (t.area < 0) {  // either winding is fine in 2D
+        RasterTri f = { {t.x[0], t.x[2], t.x[1]}, {t.y[0], t.y[2], t.y[1]}, -t.area };
+        t = f;
+    }
+    RasterSetup s;
+    if (!raster_setup(dst, &t, &s)) return;
+    CHAO_RASTER_LOOP(s, {
+        uint32_t* p = &dst->pixels[py * dst->size.x + px];
+        *p = blend_pixel(color, *p, chao_blend_mode);
+    });
 }
 
-bool validate_z_buffer(Bitmap* dst, int x, int y, int u1, int u2, int det, float z1, float z2, float z3, float* out_z) {
-    if (dst->z_buffer == NULL) {
-        return true;
-    }
-	int u3 = det - u1 - u2;
-	float detf = (float)det;
-	if (detf == 0.0f) {
-	   return false;
-    }
-	float w1 = (float)u1 / detf;
-	float w2 = (float)u2 / detf;
-	float w3 = 1.0f - w1 - w2;
-	float z = z1 * w1 + z2 * w2 + z3 * w3;
-	int z_buffer_index = y * dst->size.x + x;
-	if (z >= dst->z_buffer[z_buffer_index]) {
-		return false;
-	}
-	dst->z_buffer[z_buffer_index] = z;
-	*out_z = z;
-	return true;
-}
-
+// Gouraud-shaded triangle: each vertex has its own colour.
 void fill_triangle_3c(Bitmap* dst, int x1, int y1, int x2, int y2, int x3, int y3, uint32_t c1, uint32_t c2, uint32_t c3) {
-	RectInt bb = get_tri_bounds_clamped(dst, x1, y1, x2, y2, x3, y3);
-	for (int x = bb.x; x <= bb.w; ++x) {
-		for (int y = bb.y; y <= bb.h; ++y) {
-			int u1, u2, det;
-			if (tri_barycentric(x1, y1, x2, y2, x3, y3, x, y, &u1, &u2, &det)) {
-				put_pixel(dst, x, y, mix_colors3(c1, c2, c3, u1, u2, det));
-			}
-		}
-	}
-}
+    RasterTri t = raster_tri(x1 + 0.5f, y1 + 0.5f, x2 + 0.5f, y2 + 0.5f, x3 + 0.5f, y3 + 0.5f);
+    if (t.area == 0) return;
+    if (t.area < 0) {
+        RasterTri f = { {t.x[0], t.x[2], t.x[1]}, {t.y[0], t.y[2], t.y[1]}, -t.area };
+        t = f;
+        swap(uint32_t, c2, c3);
+    }
+    RasterSetup s;
+    if (!raster_setup(dst, &t, &s)) return;
 
-void fill_triangle_3uv(Bitmap* dst, int x1, int y1, int x2, int y2, int x3, int y3, float tx1, float ty1, float tx2, float ty2, float tx3, float ty3, float z1, float z2, float z3, Vector4 v1, Vector4 v2, Vector4 v3, Bitmap* texture) {
-    RectInt bb = get_tri_bounds_clamped(dst, x1, y1, x2, y2, x3, y3);
-    for (int y = bb.y; y <= bb.h; ++y) {
-        for (int x = bb.x; x <= bb.w; ++x) {
-            int u1, u2, det;
-            if (z1 == 0.0f || z2 == 0.0f || z3 == 0.0f) {
-            	continue;
-			}
-            if (!tri_barycentric(x1, y1, x2, y2, x3, y3, x, y, &u1, &u2, &det)) {
-            	continue;
-			}
-			float out_z;
-			if (!validate_z_buffer(dst, x, y, u1, u2, det, z1, z2, z3, &out_z)) {
-				continue;
-			}
-			uint32_t sample = 0xFF00FFFF;
-			if (texture != NULL) {
-				int u3 = det - u1 - u2;
-
-				float invz1 = 1.0f / z1;
-				float invz2 = 1.0f / z2;
-				float invz3 = 1.0f / z3;
-
-				float itx = (tx1 * invz1 * (float)u1 + tx2 * invz2 * (float)u2 + tx3 * invz3 * (float)u3) / (float)det;
-				float ity = (ty1 * invz1 * (float)u1 + ty2 * invz2 * (float)u2 + ty3 * invz3 * (float)u3) / (float)det;
-				float iw  = (invz1 * (float)u1 + invz2 * (float)u2 + invz3 * (float)u3) / (float)det;
-
-				if (iw == 0.0f) continue;
-
-				float tu = itx / iw;
-				float tv = ity / iw;
-				tu = clamp(tu, 0, 1);
-				tv = clamp(tv, 0, 1);
-
-				int tex_x = (int)(tu * (texture->size.x - 1));
-				int tex_y = (int)(tv * (texture->size.y - 1));
-				sample = get_pixel(texture, tex_x, tex_y);
-			}
-
-            put_pixel(dst, x, y, sample);
+    float ch[3][4];
+    uint32_t cs[3] = { c1, c2, c3 };
+    for (int i = 0; i < 3; ++i) {
+        ch[i][0] = (float)((cs[i] >> 24) & 0xFF);
+        ch[i][1] = (float)((cs[i] >> 16) & 0xFF);
+        ch[i][2] = (float)((cs[i] >> 8) & 0xFF);
+        ch[i][3] = (float)(cs[i] & 0xFF);
+    }
+    float inv_area = 1.0f / (float)t.area;
+    CHAO_RASTER_LOOP(s, {
+        float l0 = (float)e0 * inv_area, l1 = (float)e1 * inv_area, l2 = 1.0f - l0 - l1;
+        uint32_t out = 0;
+        for (int k = 0; k < 4; ++k) {
+            float v = ch[0][k] * l0 + ch[1][k] * l1 + ch[2][k] * l2 + 0.5f;
+            uint32_t b = v <= 0.0f ? 0 : v >= 255.0f ? 255 : (uint32_t)v;
+            out |= b << (24 - 8 * k);
         }
-    }
-}
-
-void fill_triangle_3uv_lit(Bitmap* dst, int x1, int y1, int x2, int y2, int x3, int y3, float tx1, float ty1, float tx2, float ty2, float tx3, float ty3, float z1, float z2, float z3, Vector4 v1, Vector4 v2, Vector4 v3, Vector3 n1, Vector3 n2, Vector3 n3, Vector3 light_dir, Bitmap* texture) {
-    if ((x1 - x3)*(y2 - y3) - (x2 - x3)*(y1 - y3) == 0) {
-    	return;
-	}
-    RectInt bb = get_tri_bounds_clamped(dst, x1, y1, x2, y2, x3, y3);
-    Vector3 L = vector3_get_normalized(light_dir);
-    if (z1 == 0.0f || z2 == 0.0f || z3 == 0.0f) {
-        return;
-    }
-
-    float invz1 = 1.0f / z1;
-    float invz2 = 1.0f / z2;
-    float invz3 = 1.0f / z3;
-
-	float fog_r = 1;
-	float fog_g = 1;
-	float fog_b = 1;
-
-	if (chao_3d_fog.enabled) {
-		fog_r = (float)((chao_3d_fog.color >> 24) & 0xFF) / 255.0f;
-		fog_g = (float)((chao_3d_fog.color >> 16) & 0xFF) / 255.0f;
-		fog_b = (float)((chao_3d_fog.color >> 8) & 0xFF) / 255.0f;
-	}
-
-    for (int y = bb.y; y <= bb.h; ++y) {
-        for (int x = bb.x; x <= bb.w; ++x) {
-            int u1, u2, det;
-            if (!tri_barycentric(x1, y1, x2, y2, x3, y3, x, y, &u1, &u2, &det)) {
-                continue;
-            }
-			float out_z = 1.0f;
-            if (!validate_z_buffer(dst, x, y, u1, u2, det, z1, z2, z3, &out_z)) {
-                continue;
-            }
-
-            int u3 = det - u1 - u2;
-            float detf = (float)det;
-            float fu1 = (float)u1;
-            float fu2 = (float)u2;
-            float fu3 = (float)u3;
-
-            uint32_t sample = 0xFF00FFFF;
-
-            if (texture != NULL) {
-                float itx = (tx1 * invz1 * fu1 + tx2 * invz2 * fu2 + tx3 * invz3 * fu3) / detf;
-                float ity = (ty1 * invz1 * fu1 + ty2 * invz2 * fu2 + ty3 * invz3 * fu3) / detf;
-                float iw  = (invz1 * fu1 + invz2 * fu2 + invz3 * fu3) / detf;
-
-                if (iw == 0.0f) continue;
-
-                float tu = itx / iw;
-                float tv = ity / iw;
-
-                tu = clamp(tu, 0.0f, 1.0f);
-                tv = clamp(tv, 0.0f, 1.0f);
-
-                int tex_x = (int)(tu * (texture->size.x - 1));
-                int tex_y = (int)(tv * (texture->size.y - 1));
-
-                sample = get_pixel(texture, tex_x, tex_y);
-            }
-
-            float inx = (n1.x * invz1 * fu1 + n2.x * invz2 * fu2 + n3.x * invz3 * fu3) / detf;
-            float iny = (n1.y * invz1 * fu1 + n2.y * invz2 * fu2 + n3.y * invz3 * fu3) / detf;
-            float inz = (n1.z * invz1 * fu1 + n2.z * invz2 * fu2 + n3.z * invz3 * fu3) / detf;
-            float iwN = (invz1 * fu1 + invz2 * fu2 + invz3 * fu3) / detf;
-
-            if (iwN == 0.0f) continue;
-
-            Vector3 N = {
-                inx / iwN,
-                iny / iwN,
-                inz / iwN
-            };
-
-            float ndotl = max(vector3_dot(N, L), 0);
-            float light = clamp01(chao_3d_directional_light.ambient + ndotl * (1.0f - chao_3d_directional_light.ambient));	
-
-            uint8_t r = (sample >> 24) & 0xFF;
-            uint8_t g = (sample >> 16) & 0xFF;
-            uint8_t b = (sample >>  8) & 0xFF;
-            uint8_t a =  sample        & 0xFF;
-
-            r = (uint8_t)(r * light);
-            g = (uint8_t)(g * light);
-            b = (uint8_t)(b * light);
-
-			if (chao_3d_fog.enabled) {
-				float fog_factor = clamp01((out_z - chao_3d_fog.start) / (chao_3d_fog.end - chao_3d_fog.start));
-				float fr = r / 255.0f;
-				float fg = g / 255.0f;
-				float fb = b / 255.0f;
-				fr = fr * (1.0f - fog_factor) + fog_r * fog_factor;
-				fg = fg * (1.0f - fog_factor) + fog_g * fog_factor;
-				fb = fb * (1.0f - fog_factor) + fog_b * fog_factor;
-				r = (uint8_t)(fr * 255.0f);
-				g = (uint8_t)(fg * 255.0f);
-				b = (uint8_t)(fb * 255.0f);
-			}
-
-            uint32_t lit_color = RGBA(r, g, b, a);
-            put_pixel(dst, x, y, lit_color);
-        }
-    }
+        uint32_t* p = &dst->pixels[py * dst->size.x + px];
+        *p = blend_pixel(out, *p, chao_blend_mode);
+    });
 }
 
 void fill_triangle_scanline(Bitmap* dst, int x1, int y1, int x2, int y2, int x3, int y3, uint32_t color) {
@@ -903,8 +827,155 @@ void blit_transformed(Bitmap* dst, Bitmap* src, RectInt rect, Vector2Int positio
 }
 
 ///////////////////////////////
-//// 3D CRAP
+//// 3D
 ///////////////////////////////
+
+// Triangles are clipped against the near plane, so geometry crossing it gets cut instead of
+// dropped. They are also clipped against a guard band this many viewports wide, so vertices
+// far off-screen can't produce huge screen coordinates. Real screen edges are handled by the
+// rasterizer's bounds.
+#define CHAO_GUARD_BAND 16.0f
+#define CHAO_CLIP_MAX_VERTS 9  // a triangle clipped by 5 planes has at most 3 + 5 vertices
+
+typedef struct {
+    Vector4 pos;  // clip space
+    float u, v;
+    Vector3 n;    // world-space normal
+} ClipVertex;
+
+typedef struct {
+    float x, y;    // screen position in pixels
+    float inv_w;   // 1 / view depth, interpolated linearly across the screen
+    float u_w, v_w; // attributes pre-divided by depth for perspective-correct interpolation
+    Vector3 n_w;
+} ScreenVertex;
+
+typedef struct {
+    Bitmap* texture;
+    bool lit;
+    Vector3 light;  // normalized, pointing toward the light
+    float ambient;
+    bool fog;
+    float fog_rgb[3];
+    float fog_start, fog_inv_range;
+} Shade3D;
+
+// Plane 0 is the near plane, 1-4 the guard band. Inside when >= 0.
+static inline float clip_distance(Vector4 p, int plane) {
+    switch (plane) {
+        case 0: return p.z + p.w;
+        case 1: return CHAO_GUARD_BAND * p.w - p.x;
+        case 2: return CHAO_GUARD_BAND * p.w + p.x;
+        case 3: return CHAO_GUARD_BAND * p.w - p.y;
+        default: return CHAO_GUARD_BAND * p.w + p.y;
+    }
+}
+
+static inline ClipVertex clip_vertex_lerp(ClipVertex a, ClipVertex b, float t) {
+    ClipVertex r;
+    r.pos = vector4_lerp(a.pos, b.pos, t);
+    r.u = lerp(a.u, b.u, t);
+    r.v = lerp(a.v, b.v, t);
+    r.n = (Vector3){ lerp(a.n.x, b.n.x, t), lerp(a.n.y, b.n.y, t), lerp(a.n.z, b.n.z, t) };
+    return r;
+}
+
+// Sutherland-Hodgman against one plane. Returns the new vertex count.
+static int clip_polygon(const ClipVertex* in, int count, ClipVertex* out, int plane) {
+    int n = 0;
+    for (int i = 0; i < count; ++i) {
+        const ClipVertex* a = &in[i];
+        const ClipVertex* b = &in[(i + 1) % count];
+        float da = clip_distance(a->pos, plane);
+        float db = clip_distance(b->pos, plane);
+        if (da >= 0.0f) out[n++] = *a;
+        if ((da >= 0.0f) != (db >= 0.0f)) {
+            // Always interpolate from the inside vertex toward the outside one, so two triangles
+            // sharing this edge compute bit-identical points and stay watertight.
+            if (da >= 0.0f) out[n++] = clip_vertex_lerp(*a, *b, da / (da - db));
+            else            out[n++] = clip_vertex_lerp(*b, *a, db / (db - da));
+        }
+    }
+    return n;
+}
+
+static inline ScreenVertex clip_to_screen(const Bitmap* dst, const ClipVertex* c) {
+    float inv_w = 1.0f / c->pos.w;
+    ScreenVertex s;
+    s.x = (c->pos.x * inv_w * 0.5f + 0.5f) * (float)dst->size.x;
+    s.y = (0.5f - c->pos.y * inv_w * 0.5f) * (float)dst->size.y;
+    s.inv_w = inv_w;
+    s.u_w = c->u * inv_w;
+    s.v_w = c->v * inv_w;
+    s.n_w = vector3_scale(c->n, inv_w);
+    return s;
+}
+
+static void raster_triangle_3d(Bitmap* dst, const ScreenVertex* v0, const ScreenVertex* v1, const ScreenVertex* v2, const Shade3D* sh) {
+    RasterTri t = raster_tri(v0->x, v0->y, v1->x, v1->y, v2->x, v2->y);
+    // Front faces are counter-clockwise on screen (negative area here). Culling uses the same
+    // snapped coordinates the rasterizer uses, so the two can never disagree.
+    if (t.area >= 0) return;
+    const ScreenVertex* v[3] = { v0, v2, v1 };  // swap to clockwise for the rasterizer
+    RasterTri tc = { {t.x[0], t.x[2], t.x[1]}, {t.y[0], t.y[2], t.y[1]}, -t.area };
+    RasterSetup s;
+    if (!raster_setup(dst, &tc, &s)) return;
+
+    float inv_area = 1.0f / (float)tc.area;
+    float* zbuf = dst->z_buffer;
+    Bitmap* tex = sh->texture;
+
+    CHAO_RASTER_LOOP(s, {
+        float l0 = (float)e0 * inv_area, l1 = (float)e1 * inv_area, l2 = 1.0f - l0 - l1;
+        float inv_w = v[0]->inv_w * l0 + v[1]->inv_w * l1 + v[2]->inv_w * l2;
+        float depth = 1.0f / inv_w;
+        int index = py * dst->size.x + px;
+        if (zbuf) {
+            if (depth >= zbuf[index]) continue;
+            zbuf[index] = depth;
+        }
+
+        uint32_t sample = 0xFF00FFFF;
+        if (tex) {
+            float u = (v[0]->u_w * l0 + v[1]->u_w * l1 + v[2]->u_w * l2) * depth;
+            float w = (v[0]->v_w * l0 + v[1]->v_w * l1 + v[2]->v_w * l2) * depth;
+            int tx = (int)(u * tex->size.x);
+            int ty = (int)(w * tex->size.y);
+            tx = tx < 0 ? 0 : tx >= tex->size.x ? tex->size.x - 1 : tx;
+            ty = ty < 0 ? 0 : ty >= tex->size.y ? tex->size.y - 1 : ty;
+            sample = tex->pixels[ty * tex->size.x + tx];
+        }
+
+        if (sh->lit || sh->fog) {
+            float r = (float)((sample >> 24) & 0xFF);
+            float g = (float)((sample >> 16) & 0xFF);
+            float b = (float)((sample >> 8) & 0xFF);
+            if (sh->lit) {
+                Vector3 n = {
+                    (v[0]->n_w.x * l0 + v[1]->n_w.x * l1 + v[2]->n_w.x * l2),
+                    (v[0]->n_w.y * l0 + v[1]->n_w.y * l1 + v[2]->n_w.y * l2),
+                    (v[0]->n_w.z * l0 + v[1]->n_w.z * l1 + v[2]->n_w.z * l2),
+                };
+                float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+                float ndotl = len > 0.0f ? vector3_dot(n, sh->light) / len : 0.0f;
+                float light = sh->ambient + fmaxf(ndotl, 0.0f) * (1.0f - sh->ambient);
+                r *= light; g *= light; b *= light;
+            }
+            if (sh->fog) {
+                float f = clamp01((depth - sh->fog_start) * sh->fog_inv_range);
+                r += (sh->fog_rgb[0] - r) * f;
+                g += (sh->fog_rgb[1] - g) * f;
+                b += (sh->fog_rgb[2] - b) * f;
+            }
+            sample = ((uint32_t)clamp(r, 0.0f, 255.0f) << 24) |
+                     ((uint32_t)clamp(g, 0.0f, 255.0f) << 16) |
+                     ((uint32_t)clamp(b, 0.0f, 255.0f) << 8) |
+                     (sample & 0xFF);
+        }
+
+        dst->pixels[index] = blend_pixel(sample, dst->pixels[index], chao_blend_mode);
+    });
+}
 
 void draw_model3d_m(Bitmap* dst, Camera3D* cam, Model3D* model, Matrix4 model_matrix) {
     Matrix4 mvp;
@@ -912,120 +983,89 @@ void draw_model3d_m(Bitmap* dst, Camera3D* cam, Model3D* model, Matrix4 model_ma
     matrix4_mul(mvp, cam->view);
     matrix4_mul(mvp, model_matrix);
 
-	Matrix4 normal_matrix;
-	MATRIX4_COPY(normal_matrix, model_matrix);
-	matrix4_fast_inverse_transpose_3x3(normal_matrix); 
+    Matrix4 normal_matrix;
+    MATRIX4_COPY(normal_matrix, model_matrix);
+    matrix4_fast_inverse_transpose_3x3(normal_matrix);
 
-    Matrix4 screen;
-    matrix4_set_screen_space_transform(screen, screen_size.x * 0.5f, screen_size.y * 0.5f);
+    Shade3D sh = {0};
+    sh.texture = model->texture;
+    sh.lit = chao_3d_directional_light.enabled;
+    sh.light = vector3_get_normalized(chao_3d_directional_light.direction);
+    sh.ambient = chao_3d_directional_light.ambient;
+    sh.fog = chao_3d_fog.enabled;
+    sh.fog_rgb[0] = (float)((chao_3d_fog.color >> 24) & 0xFF);
+    sh.fog_rgb[1] = (float)((chao_3d_fog.color >> 16) & 0xFF);
+    sh.fog_rgb[2] = (float)((chao_3d_fog.color >> 8) & 0xFF);
+    sh.fog_start = chao_3d_fog.start;
+    float fog_range = chao_3d_fog.end - chao_3d_fog.start;
+    sh.fog_inv_range = fog_range > 0.0f ? 1.0f / fog_range : 0.0f;
 
     for (int i = 0; i < model->tris_count; i++) {
+        int vi[3] = { model->tris[i].x, model->tris[i].y, model->tris[i].z };
+        int ti[3] = { model->tri_uvs[i].x, model->tri_uvs[i].y, model->tri_uvs[i].z };
+        int ni[3] = { model->tri_normals[i].x, model->tri_normals[i].y, model->tri_normals[i].z };
 
-        Vector3Int tri  = model->tris[i];
-        Vector3Int tuv  = model->tri_uvs[i];
+        ClipVertex cv[3];
+        int outside_mask[5] = {0};
+        for (int k = 0; k < 3; ++k) {
+            Vector3 p = model->vertices[vi[k]];
+            cv[k].pos = vector4_get_transformed((Vector4){ p.x, p.y, p.z, 1.0f }, mvp);
+            Vector2 uv = ti[k] >= 0 ? model->uvs[ti[k]] : VECTOR2_ZERO;
+            cv[k].u = uv.x;
+            cv[k].v = uv.y;
+            cv[k].n = VECTOR3_ZERO;
+        }
 
-        Vector4 v1 = { model->vertices[tri.x].x, model->vertices[tri.x].y, model->vertices[tri.x].z, 1 };
-        Vector4 v2 = { model->vertices[tri.y].x, model->vertices[tri.y].y, model->vertices[tri.y].z, 1 };
-        Vector4 v3 = { model->vertices[tri.z].x, model->vertices[tri.z].y, model->vertices[tri.z].z, 1 };
+        // Trivial reject when all three vertices are outside the same frustum plane.
+        {
+            int out_l = 0, out_r = 0, out_b = 0, out_t = 0, out_n = 0;
+            for (int k = 0; k < 3; ++k) {
+                Vector4 p = cv[k].pos;
+                out_l += p.x < -p.w;
+                out_r += p.x >  p.w;
+                out_b += p.y < -p.w;
+                out_t += p.y >  p.w;
+                out_n += p.z < -p.w;
+            }
+            if (out_l == 3 || out_r == 3 || out_b == 3 || out_t == 3 || out_n == 3) continue;
+        }
 
-        vector4_transform(&v1, mvp);
-        vector4_transform(&v2, mvp);
-        vector4_transform(&v3, mvp);
+        if (sh.lit) {
+            for (int k = 0; k < 3; ++k) {
+                Vector3 n;
+                if (ni[k] >= 0) {
+                    n = model->normals[ni[k]];
+                } else {  // no normals in the model: use the face normal
+                    Vector3 a = model->vertices[vi[0]], b = model->vertices[vi[1]], c = model->vertices[vi[2]];
+                    n = vector3_cross(vector3_subtract(b, a), vector3_subtract(c, a));
+                }
+                Vector4 t = vector4_get_transformed((Vector4){ n.x, n.y, n.z, 0.0f }, normal_matrix);
+                cv[k].n = vector3_get_normalized((Vector3){ t.x, t.y, t.z });
+            }
+        }
 
-        if (v1.w <= 0 || v2.w <= 0 || v3.w <= 0) {
-        	continue;
-		}
+        // Clip only when some vertex is behind the near plane or outside the guard band.
+        ClipVertex buf_a[CHAO_CLIP_MAX_VERTS], buf_b[CHAO_CLIP_MAX_VERTS];
+        ClipVertex* poly = cv;
+        int count = 3;
+        for (int plane = 0; plane < 5; ++plane) {
+            bool needs_clip = false;
+            for (int k = 0; k < count; ++k) {
+                if (clip_distance(poly[k].pos, plane) < 0.0f) { needs_clip = true; break; }
+            }
+            if (!needs_clip) continue;
+            ClipVertex* out = poly == buf_a ? buf_b : buf_a;
+            count = clip_polygon(poly, count, out, plane);
+            poly = out;
+            if (count < 3) break;
+        }
+        if (count < 3) continue;
 
-        float z1 = v1.w;
-        float z2 = v2.w;
-        float z3 = v3.w;
-
-        vector4_perspective_divide(&v1);
-        vector4_perspective_divide(&v2);
-        vector4_perspective_divide(&v3);
-		v1.w = v2.w = v3.w = 1.0f;
-
-		if ((v1.x < -1 && v2.x < -1 && v3.x < -1) ||
-			(v1.x >  1 && v2.x >  1 && v3.x >  1) ||
-			(v1.y < -1 && v2.y < -1 && v3.y < -1) ||
-			(v1.y >  1 && v2.y >  1 && v3.y >  1))
-		{
-			continue;
-		}
-        
-        float ax = v2.x - v1.x;
-        float ay = v2.y - v1.y;
-        float bx = v3.x - v1.x;
-        float by = v3.y - v1.y;
-        float cross = ax * by - ay * bx;
-        if (cross <= 0) continue; // Cull clockwise triangles
-
-        vector4_transform(&v1, screen);
-        vector4_transform(&v2, screen);
-        vector4_transform(&v3, screen);
-
-        Vector2 uv1 = model->uvs[tuv.x];
-        Vector2 uv2 = model->uvs[tuv.y];
-        Vector2 uv3 = model->uvs[tuv.z];
-
-
-		if (chao_3d_directional_light.enabled) {
-			Vector3Int tni = model->tri_normals[i];
-			Vector3 n1 = model->normals[tni.x];
-			Vector3 n2 = model->normals[tni.y];
-			Vector3 n3 = model->normals[tni.z];
-
-			{
-				Vector4 t;
-
-				t = (Vector4){ n1.x, n1.y, n1.z, 0 };
-				vector4_transform(&t, normal_matrix);
-				n1 = (Vector3){ t.x, t.y, t.z };
-				vector3_normalize(&n1);
-
-				t = (Vector4){ n2.x, n2.y, n2.z, 0 };
-				vector4_transform(&t, normal_matrix);
-				n2 = (Vector3){ t.x, t.y, t.z };
-				vector3_normalize(&n2);
-
-				t = (Vector4){ n3.x, n3.y, n3.z, 0 };
-				vector4_transform(&t, normal_matrix);
-				n3 = (Vector3){ t.x, t.y, t.z };
-				vector3_normalize(&n3);
-			}
-
-			vector3_normalize(&n1);
-			vector3_normalize(&n2);
-			vector3_normalize(&n3);
-
-			fill_triangle_3uv_lit(
-				dst,
-				(int)v1.x, (int)v1.y,
-				(int)v2.x, (int)v2.y,
-				(int)v3.x, (int)v3.y,
-				uv1.x, uv1.y,
-				uv2.x, uv2.y,
-				uv3.x, uv3.y,
-				z1, z2, z3,
-				v1, v2, v3,
-				n1, n2, n3,
-				chao_3d_directional_light.direction,
-				model->texture
-					);
-		} else {
-			fill_triangle_3uv(
-				dst,
-				(int)v1.x, (int)v1.y,
-				(int)v2.x, (int)v2.y,
-				(int)v3.x, (int)v3.y,
-				uv1.x, uv1.y,
-				uv2.x, uv2.y,
-				uv3.x, uv3.y,
-				z1, z2, z3,
-				v1, v2, v3,
-				model->texture
-				);
-		}
+        ScreenVertex sv[CHAO_CLIP_MAX_VERTS];
+        for (int k = 0; k < count; ++k) sv[k] = clip_to_screen(dst, &poly[k]);
+        for (int k = 1; k + 1 < count; ++k) {
+            raster_triangle_3d(dst, &sv[0], &sv[k], &sv[k + 1], &sh);
+        }
     }
 }
 
