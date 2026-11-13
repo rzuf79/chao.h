@@ -20,6 +20,7 @@ static const char* examples[] = {
     "hello_triangle",
     "terrain",
     "beacon_run",
+    "scrap_tug",
 };
 
 #ifdef _WIN32

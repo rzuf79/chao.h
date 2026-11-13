@@ -21,6 +21,8 @@ cc -o nob nob.c
   Click to capture the mouse and Esc to release it. WASD moves, Space/E goes up, Q/Ctrl goes down, Shift moves faster, the arrow keys look around and R generates a new terrain.
 - `beacon_run`: a small but complete game. Glide a paper plane over a generated island and light 5 beacons before the fog swallows it. Thermals, marked by clouds, let you climb.
   A/D turn, W/S dive and climb, Esc pauses. Everything in it (island, models, effects) is generated in code.
+- `scrap_tug`: an orbital salvage game in one `main.c`. Tow three wrecks to the refinery before your fuel or hull runs out. Heavy cargo swings on the cable and can smash pirates; deliveries pay for engine, armor, and service upgrades.
+  W/Up thrusts, A/D or Left/Right turns, S/Down reverses, Shift boosts, Space brakes, E attaches/releases the cable, and Q reels it in. Stop near the refinery to shop with 1/2/3. Esc pauses; R retries after a shift.
 
 macOS and Linux use SDL2 (`/Library/Frameworks/SDL2.framework` or `sdl2-config`).
 Windows uses the WinAPI backend and needs no extra dependencies.
