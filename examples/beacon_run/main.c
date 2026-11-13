@@ -1172,6 +1172,7 @@ static void init(void) {
 static void update(float dt) {
     game_tick(dt);
     game_draw(dt);
+    text(screen_size.x - 6, 16, COLOR_WHITE, TEXT_ALIGN_RIGHT, "FPS: %d", chao_fps);
 }
 
 int main(void) {

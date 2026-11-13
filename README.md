@@ -23,6 +23,8 @@ cc -o nob nob.c
   A/D turn, W/S dive and climb, Esc pauses. Everything in it (island, models, effects) is generated in code.
 - `scrap_tug`: an orbital salvage game in one `main.c`. Tow three wrecks to the refinery before your fuel or hull runs out. Heavy cargo swings on the cable and can smash pirates; deliveries pay for engine, armor, and service upgrades.
   W/Up thrusts, A/D or Left/Right turns, S/Down reverses, Shift boosts, Space brakes, E attaches/releases the cable, and Q reels it in. Stop near the refinery to shop with 1/2/3. Esc pauses; R retries after a shift.
+- `bonefield`: a 3D survivors game in one `main.c`, with procedural models, automatic weapons, XP pickups and a three-minute run. Kill the Keeper that arrives at 2:30 and survive to 3:00.
+  WASD/arrows move, Space dodges, 1/2/3 spend upgrade points on the crossbow, orbiting blades and pulse. Esc pauses; R restarts after a run. Starts directly in play.
 
 macOS and Linux use SDL2 (`/Library/Frameworks/SDL2.framework` or `sdl2-config`).
 Windows uses the WinAPI backend and needs no extra dependencies.

@@ -21,6 +21,7 @@ static const char* examples[] = {
     "terrain",
     "beacon_run",
     "scrap_tug",
+    "bonefield",
 };
 
 #ifdef _WIN32

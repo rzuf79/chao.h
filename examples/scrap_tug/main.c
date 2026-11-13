@@ -896,6 +896,7 @@ static void update(float dt) {
     }
     camera_draw = add(camera, v2(sinf(clock_time * 81) * shake, cosf(clock_time * 67) * shake));
     render();
+    text(screen_size.x - 60, 3, MUTED, "FPS: %d", chao_fps);
 }
 
 int main(void) {
