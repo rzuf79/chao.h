@@ -25,6 +25,9 @@ cc -o nob nob.c
   W/Up thrusts, A/D or Left/Right turns, S/Down reverses, Shift boosts, Space brakes, E attaches/releases the cable, and Q reels it in. Stop near the refinery to shop with 1/2/3. Esc pauses; R retries after a shift.
 - `bonefield`: a 3D survivors game in one `main.c`, with procedural models, automatic weapons, XP pickups and a three-minute run. Kill the Keeper that arrives at 2:30 and survive to 3:00.
   WASD/arrows move, Space dodges, 1/2/3 spend upgrade points on the crossbow, orbiting blades and pulse. Esc pauses; R restarts after a run. Starts directly in play.
+- `zzt`: a 3D ZZT-style game in one `main.c`, with extruded CP437 characters, EGA colors, five connected boards, object scripts, shops, ricochets, colored locks and pushable stones. Find three fuses to open the south exit.
+  WASD/arrows move, Space shoots, Shift + direction shoots without moving, T lights a torch, U undoes a push, and R resets the room's boulders. Bump people and signs to read them. H shows help; Esc pauses. Starts directly in play.
+  Run with `./nob run zzt`. `./build/debug/zzt --self-test` checks the complete adventure without a window; `--snapshot out.ppm [0..4]` renders a board to an image.
 
 macOS and Linux use SDL2 (`/Library/Frameworks/SDL2.framework` or `sdl2-config`).
 Windows uses the WinAPI backend and needs no extra dependencies.

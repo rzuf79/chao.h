@@ -22,6 +22,7 @@ static const char* examples[] = {
     "beacon_run",
     "scrap_tug",
     "bonefield",
+    "zzt",
 };
 
 #ifdef _WIN32
